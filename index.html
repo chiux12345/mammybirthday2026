@@ -874,6 +874,7 @@ function wakeAudio(ms = 700){
   if (ctx.state === "running") return Promise.resolve(true);
   return Promise.race([ctx.resume().then(() => ctx.state === "running", () => false), new Promise(r => setTimeout(() => r(ctx.state === "running"), ms))]);
 }
+const SILENT_WAV = "data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
 let pendingSong = false, silentEl = null;
 // iOS: start a silent looping <audio> + a 1-sample Web Audio buffer inside the tap,
 // so effects and the song play through the speaker even with the silent switch on
@@ -881,7 +882,7 @@ function unlockAudio(){
   setSession("playback");
   const ctx = ensureAudio();
   try {
-    if (!silentEl) { silentEl = new Audio("data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA=="); silentEl.loop = true; silentEl.setAttribute("playsinline", ""); }
+    if (!silentEl) { silentEl = new Audio(SILENT_WAV); silentEl.loop = true; silentEl.setAttribute("playsinline", ""); }
     const pr = silentEl.play(); if (pr && pr.catch) pr.catch(() => {});
   } catch (e) {}
   try { const b = ctx.createBuffer(1, 1, 22050), src = ctx.createBufferSource(); src.buffer = b; src.connect(ctx.destination); src.start(0); } catch (e) {}
@@ -906,29 +907,32 @@ function wavBlob(ab){
     const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext; if (!OAC) return;
     const sr = 22050, oc = new OAC(1, sr * 16, sr);
     playMelody(oc);
-    const done = ab => { songURL = URL.createObjectURL(wavBlob(ab)); if (songEl && !songEl.getAttribute("src")) { songEl.src = songURL; songEl.load(); } };
+    const done = ab => { songURL = URL.createObjectURL(wavBlob(ab)); };
     const pr = oc.startRendering();
     if (pr && pr.then) pr.then(done); else oc.oncomplete = e => done(e.renderedBuffer);
   } catch (e) {}
 })();
 let songUnlocked = false;
+// Unlock the song player during the first tap by playing a silent clip on it
+// (never the song itself), so it can be started later without a tap.
 function unlockSong(){
   if (songUnlocked) return;
   try {
-    if (!songEl) { songEl = new Audio(); songEl.setAttribute("playsinline", ""); songEl.preload = "auto"; if (songURL) songEl.src = songURL; }
-    if (!songEl.getAttribute("src")) return;
-    songUnlocked = true;
-    songEl.muted = true;
+    if (!songEl) { songEl = new Audio(); songEl.setAttribute("playsinline", ""); songEl.preload = "auto"; }
+    songEl.src = SILENT_WAV;
     const pr = songEl.play();
-    const reset = () => { songEl.pause(); songEl.currentTime = 0; songEl.muted = false; };
-    if (pr && pr.then) pr.then(reset, () => { songEl.muted = false; }); else reset();
+    songUnlocked = true;
+    const stop = () => { try { songEl.pause(); } catch (e) {} };
+    if (pr && pr.then) pr.then(stop, stop); else stop();
   } catch (e) {}
 }
 function playSong(){
   setSession("playback");
-  if (songEl && songEl.getAttribute("src")) {
+  if (songEl && songURL) {
     try {
-      songEl.muted = false; songEl.volume = 1; songEl.currentTime = 0;
+      if (songEl.src !== songURL) songEl.src = songURL;
+      songEl.muted = false; songEl.volume = 1;
+      try { songEl.currentTime = 0; } catch (e) {}
       const pr = songEl.play();
       if (pr && pr.catch) pr.catch(() => { pendingSong = true; });
       return;
@@ -944,7 +948,7 @@ addEventListener("pointerdown", () => {
   }
   if (!pendingSong) return;
   pendingSong = false; unlockAudio();
-  if (songEl && songEl.getAttribute("src")) { try { songEl.currentTime = 0; songEl.play().catch(() => {}); return; } catch (e) {} }
+  if (songEl && songURL) { try { if (songEl.src !== songURL) songEl.src = songURL; songEl.play().catch(() => {}); return; } catch (e) {} }
   setTimeout(() => wakeAudio().then(() => playMelody()), 60);
 }, true);
 let micOn = false, micWanted = false, stream = null, analyser = null, buf = null, noise = 0;
