@@ -862,17 +862,45 @@ candleDefs.forEach((c, i) => {
 
 /* ---------- audio ---------- */
 let actx = null;
+function setSession(t){ try { if (navigator.audioSession) navigator.audioSession.type = t; } catch (e) {} }
 function ensureAudio(){
-  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
-  if (actx && actx.state === "suspended") actx.resume();
+  if (!actx) { setSession("playback"); try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (actx && actx.state !== "running") { try { actx.resume(); } catch (e) {} }
   return actx;
 }
+// wake the audio engine (iOS can leave it "interrupted" after the microphone is used)
+function wakeAudio(ms = 700){
+  const ctx = actx; if (!ctx) return Promise.resolve(false);
+  if (ctx.state === "running") return Promise.resolve(true);
+  return Promise.race([ctx.resume().then(() => ctx.state === "running", () => false), new Promise(r => setTimeout(() => r(ctx.state === "running"), ms))]);
+}
+let pendingSong = false, silentEl = null;
+// iOS: start a silent looping <audio> + a 1-sample Web Audio buffer inside the tap,
+// so effects and the song play through the speaker even with the silent switch on
+function unlockAudio(){
+  setSession("playback");
+  const ctx = ensureAudio();
+  try {
+    if (!silentEl) { silentEl = new Audio("data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA=="); silentEl.loop = true; silentEl.setAttribute("playsinline", ""); }
+    const pr = silentEl.play(); if (pr && pr.catch) pr.catch(() => {});
+  } catch (e) {}
+  try { const b = ctx.createBuffer(1, 1, 22050), src = ctx.createBufferSource(); src.buffer = b; src.connect(ctx.destination); src.start(0); } catch (e) {}
+}
+function playSong(){
+  wakeAudio().then(ok => { if (ok) playMelody(); else pendingSong = true; });
+}
+addEventListener("pointerdown", () => {
+  if (!pendingSong) return;
+  pendingSong = false; unlockAudio();
+  setTimeout(() => wakeAudio().then(() => playMelody()), 60);
+}, true);
 let micOn = false, micWanted = false, stream = null, analyser = null, buf = null, noise = 0;
 async function enableMic(){
   micWanted = true;
   const ctx = ensureAudio();
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("no media");
+    setSession("play-and-record");
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     const src = ctx.createMediaStreamSource(stream);
     analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
@@ -892,6 +920,8 @@ function stopMic(){
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null;
   $("#micBtn").classList.remove("on");
+  setSession("playback");
+  wakeAudio();
 }
 function readMic(){
   analyser.getFloatTimeDomainData(buf);
@@ -910,11 +940,12 @@ function playMelody(){
                ["G4",.75],["G4",.25],["A4",1],["G4",1],["D5",1],["C5",2],
                ["G4",.75],["G4",.25],["G5",1],["E5",1],["C5",1],["B4",1],["A4",2.6],
                ["F5",.75],["F5",.25],["E5",1],["C5",1],["D5",1.2],["C5",3]];
-  const master = ctx.createGain(); master.gain.value = .22;
+  const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 4; comp.connect(ctx.destination);
+  const master = ctx.createGain(); master.gain.value = .5;
   const delay = ctx.createDelay(); delay.delayTime.value = .27;
   const fb = ctx.createGain(); fb.gain.value = .28;
   const wet = ctx.createGain(); wet.gain.value = .3;
-  master.connect(ctx.destination); master.connect(delay); delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(ctx.destination);
+  master.connect(comp); master.connect(delay); delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(comp);
   let t = ctx.currentTime + .15; const beat = .46;
   seq.forEach(([n, d], i) => {
     const f = N[n];
@@ -963,8 +994,7 @@ function intro(){
   let started = false;
   box.addEventListener("click", () => {
     if (started) return; started = true;
-    ensureAudio(); setHint("");
-    if (!micOn) enableMic();
+    unlockAudio(); setHint("");
     const T = (ms, fn) => setTimeout(fn, ms);
     T(0, () => { box.classList.add("untie"); untieSound(); box.style.pointerEvents = "none"; });
     T(1100, () => { whoosh(1.4, 300, 1600, .22); box.style.transform = "translate(0px,-560px)"; box.style.opacity = 0; });
@@ -974,6 +1004,7 @@ function intro(){
     T(6000, () => { click(); });
     T(6150, () => { lf.setAttribute("opacity", "1"); whoosh(.35, 600, 900, .12); });
     T(6700, () => { flames.forEach(f => { f.out = false; f.life = .05; f.boot = true; f.g.classList.remove("out", "unlit"); }); whoosh(.6, 400, 1400, .2); sparkle(); });
+    T(7300, () => { if (!micOn) enableMic(); });
     T(7400, () => { lf.setAttribute("opacity", "0"); lighter.style.transform = "translate(220px,40px) rotate(14deg)"; lighter.style.opacity = 0; });
     T(8200, () => { armed = true; readyHint(); });
   });
@@ -1073,7 +1104,7 @@ function celebrate(){
   document.body.classList.add("celebrate");
   const r = $("#stage").getBoundingClientRect();
   burst(r.left + r.width / 2, r.top + r.height * .35, r.width * .32);
-  setTimeout(playMelody, 500);
+  setTimeout(playSong, 1000);
   const card = $("#card");
   card.querySelectorAll("p").forEach((p, i) => p.style.transitionDelay = (1 + i * .45) + "s");
   flowTimer = setTimeout(showMem, 1800);
