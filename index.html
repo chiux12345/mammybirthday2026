@@ -141,6 +141,12 @@ body.celebrate .hint{opacity:0}
 @keyframes boxbob{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
 .intro-box,.intro-lighter,#candles,#flames{transition:transform 1.3s cubic-bezier(.5,0,.2,1), opacity .9s ease}
 
+.mictoast{position:fixed;z-index:17;top:calc(70px + env(safe-area-inset-top));left:calc(14px + env(safe-area-inset-left));
+  max-width:min(300px,calc(100vw - 28px));padding:12px 14px;border-radius:14px;text-align:left;
+  background:rgba(30,14,22,.92);border:1px solid var(--line);color:var(--ink);font-size:14px;line-height:1.6;letter-spacing:.04em;
+  box-shadow:0 12px 30px rgba(0,0,0,.45);opacity:0;transform:translateY(-6px);pointer-events:none;transition:opacity .4s, transform .4s}
+.mictoast.show{opacity:1;transform:none}
+
 /* ---------- mic button ---------- */
 .micfab{position:fixed;z-index:16;top:calc(14px + env(safe-area-inset-top));left:calc(14px + env(safe-area-inset-left));
   width:48px;height:48px;border-radius:50%;display:grid;place-items:center;cursor:pointer;padding:0;
@@ -338,6 +344,7 @@ footer{position:relative;z-index:2;text-align:center;padding:0 16px 22px;font-fa
 <body>
 <canvas id="bg" class="layer"></canvas>
 <div class="vignette"></div>
+<div class="mictoast" id="micToast" role="status"></div>
 <button class="micfab" id="micBtn" type="button" aria-label="開咪吹蠟燭">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>
 </button>
@@ -952,7 +959,25 @@ addEventListener("pointerdown", () => {
   setTimeout(() => wakeAudio().then(() => playMelody()), 60);
 }, true);
 let micOn = false, micWanted = false, stream = null, analyser = null, buf = null, noise = 0;
-async function enableMic(){
+function micToast(t){
+  const el = $("#micToast"); if (!el) return;
+  el.innerHTML = t; el.classList.add("show");
+  clearTimeout(micToast.t); micToast.t = setTimeout(() => el.classList.remove("show"), 7000);
+}
+function micHelp(e){
+  const ua = navigator.userAgent || "", ios = /iPhone|iPad|iPod/i.test(ua);
+  const inApp = /FBAN|FBAV|FB_IAB|Instagram|Line\/|MicroMessenger|WhatsApp|Messenger|KAKAOTALK|; wv\)/i.test(ua);
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || inApp)
+    return "呢個 app 入面嘅瀏覽器用唔到咪<br>請撳右上角「用瀏覽器開啟」<br>（" + (ios ? "Safari" : "Chrome") + "）再試";
+  const n = e && e.name;
+  if (n === "NotAllowedError" || n === "SecurityError")
+    return ios ? "麥克風權限被拒絕咗<br>請重新整理網頁，跳出提示時撳「允許」<br>或者：設定 → Safari → 麥克風 → 允許"
+               : "麥克風權限被封鎖咗<br>請撳網址列左邊嘅圖示 → 權限 → 麥克風 → 允許<br>然後重新整理網頁";
+  if (n === "NotFoundError") return "搵唔到麥克風";
+  if (n === "NotReadableError") return "麥克風俾其他 app 用緊<br>請關咗其他 app 再試";
+  return "開唔到麥克風（" + (n || "error") + "）";
+}
+async function enableMic(fromButton){
   micWanted = true;
   const ctx = ensureAudio();
   try {
@@ -969,7 +994,8 @@ async function enableMic(){
     if (armed) readyHint();
   } catch (e) {
     micWanted = false;
-    
+    setSession("playback");
+    if (fromButton) micToast(micHelp(e));
   }
 }
 function stopMic(){
@@ -1181,7 +1207,7 @@ function relight(){
 }
 
 /* ---------- inputs ---------- */
-$("#micBtn").addEventListener("click", () => { if (micOn) { stopMic(); $("#meter").classList.remove("show"); setStatus("來自細佬的祝福"); micWanted = false; } else enableMic(); });
+$("#micBtn").addEventListener("click", () => { if (micOn) { stopMic(); $("#meter").classList.remove("show"); setStatus("來自細佬的祝福"); micWanted = false; } else { unlockAudio(); enableMic(true); } });
 
 /* ---------- memories (auto) ---------- */
 const mem = $("#mem"), deck = $("#deck");
